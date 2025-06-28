@@ -1,91 +1,202 @@
+// app.js
+
+// --------------------
+// 1. Environment Setup
+// --------------------
 const env = process.env.NODE_ENV || 'development'
-
 require('dotenv').config({ path: `.env.${env}` })
-const express = require('express')
-const mongoose = require('mongoose')
-const cors = require('cors')
 
+// --------------------
+// 2. Dependencies
+// --------------------
+const express = require('express')
+const cors = require('cors')
+const mongoose = require('mongoose')
+const Sentry = require('@sentry/node')
 const swaggerJsdoc = require('swagger-jsdoc')
 const swaggerUi = require('swagger-ui-express')
-const { swaggerOptions } = require('./swagger.js')
-
-// require('./utils/agenda')
+const logger = require('./utils/logger')
+// initialize background jobs / queues
+// require('./utils/agenda');
 require('./utils/emailQueeRedis')
 
-const categoryRoutes = require('./routes/categoryRoutes')
+const {
+  client,
+  httpRequestsTotal,
+  httpRequestDuration,
+} = require('./utils/metrics')
+
+// --------------------
+// 3. Route Modules
+// --------------------
 const authRoutes = require('./routes/authRoutes')
 const userRoutes = require('./routes/userRoutes')
+const categoryRoutes = require('./routes/categoryRoutes')
 const postRoutes = require('./routes/postRoutes')
 const commentRoutes = require('./routes/commentRoutes')
 const adminCommentRoutes = require('./routes/adminCommentRoutes')
 const mediaRoutes = require('./routes/mediaRoutes')
 
-const { protect, admin, superAdmin } = require('./middleware/auth')
-// const configRoutes   = require('./routes/configRoutes');
+// --------------------
+// 4. Sentry Initialization
+// --------------------
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  environment: env,
+  tracesSampleRate: 0.1,
+})
 
+// --------------------
+// 5. Express App Setup
+// --------------------
 const app = express()
-const PORT = process.env.PORT || 5000
 
-// --- Middleware ---
+// 5.1. Request Logging (Winston)
+//    logs every incoming request
+app.use((req, res, next) => {
+  logger.info(`${req.method} ${req.url}`)
+  next()
+})
+
+// 5.2. Core Middleware
 app.use(cors())
 app.use(express.json())
 
-// --- Swagger Setup ---
-const specs = swaggerJsdoc(swaggerOptions)
+// Metrics middleware: her isteği sayar ve süresini ölçer
+app.use((req, res, next) => {
+  // Timer’ı başlat
+  const end = httpRequestDuration.startTimer()
+
+  res.on('finish', () => {
+    // Express route path’i yoksa raw path kullan
+    const route = req.route ? req.route.path : req.path
+
+    // Sayaç artışı
+    httpRequestsTotal.inc({
+      method: req.method,
+      route,
+      status: res.statusCode,
+    })
+
+    // Süre gözlemi
+    end({
+      method: req.method,
+      route,
+      status: res.statusCode,
+    })
+  })
+
+  next()
+})
+
+// 5.3. Swagger UI (API Documentation)
+const specs = swaggerJsdoc(require('./swagger.js').swaggerOptions)
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs))
 
-// --- Healthcheck Endpoint ---
+// --------------------
+// 6. Public Endpoints
+// --------------------
+// Health check
 app.get('/', (req, res) => {
-  res.send('Merhaba Bay! Backend çalışıyor.')
+  res.send('Merhaba Bay! Backend is up and running.')
 })
 
-// Auth katmanı
+// Prometheus’un scrape edeceği metrikler
+app.get('/metrics', async (req, res) => {
+  try {
+    res.set('Content-Type', client.register.contentType)
+    res.end(await client.register.metrics())
+  } catch (err) {
+    logger.error('Metrics endpoint hatası', err)
+    res.status(500).send('Metrics toplama hatası')
+  }
+})
+
+// --------------------
+// 7. API Routes
+// --------------------
 app.use('/api/auth', authRoutes)
-
-// --- Route Mounting ---
 app.use('/api/users', userRoutes)
-app.use('/api/posts', postRoutes)
 app.use('/api/categories', categoryRoutes)
-// **Yorumlar** (post’a bağlı)
+app.use('/api/posts', postRoutes)
 app.use('/api/posts/:postId/comments', commentRoutes)
-
-// **Admin Yorum Yönetimi**
 app.use('/api/comments', adminCommentRoutes)
-
 app.use('/api/media', mediaRoutes)
 
-// app.use('/api/config', configRoutes);
-
-// --- 404 Handler ---
-app.use((req, res, next) => {
-  res.status(404).json({ message: 'Endpoint bulunamadı.' })
+// --------------------
+// 8. Test Routes
+// --------------------
+// Winston log test
+app.get('/test/log', (req, res) => {
+  logger.info('ℹ️ INFO level test log')
+  logger.warn('⚠️ WARN level test log')
+  logger.error('❌ ERROR level test log')
+  res.send('Winston test logs have been written.')
 })
 
-// --- Global Error Handler ---
+// Sentry error test
+app.get('/test/sentry', (req, res) => {
+  throw new Error('🧪 Sentry test error')
+})
+
+app.get('/debug-sentry', function mainHandler(req, res) {
+  throw new Error('My first Sentry error!')
+})
+
+app.get('/test/error-rate', (req, res) => {
+  res.status(500).send('Forced error')
+})
+
+app.get('/test/slow', async (req, res) => {
+  await new Promise(r => setTimeout(r, 2000))
+  res.send('OK')
+})
+
+// --------------------
+// 9. Sentry Error Handler
+// --------------------
+// For @sentry/node v8: use setupExpressErrorHandler
+Sentry.setupExpressErrorHandler(app)
+
+// --------------------
+// 10. 404 Handler
+// --------------------
+// Catches any request that didn't match above routes
+app.use((req, res) => {
+  res.status(404).json({ message: 'Endpoint not found.' })
+})
+
+// --------------------
+// 11. Global Error Handler
+// --------------------
+// Logs the error via Winston, handles duplicate-key errors, then responds
 app.use((err, req, res, next) => {
-  console.error(err)
-  // Duplicate key error (11000) için özel mesaj
+  logger.error(err)
+
+  // MongoDB duplicate key
   if (err.code === 11000 && err.keyPattern) {
     const field = Object.keys(err.keyPattern)[0]
-    return res
-      .status(400)
-      .json({ message: `Aynı ${field} ile ikinci kez kayıt yapılamaz.` })
+    return res.status(400).json({ message: `Duplicate ${field} not allowed.` })
   }
+
   res
     .status(err.status || 500)
-    .json({ message: err.message || 'Sunucu hatası.' })
+    .json({ message: err.message || 'Internal Server Error.' })
 })
 
-// --- MongoDB Bağlantısı ve Sunucu Başlatma ---
+// --------------------
+// 12. Database Connection & Server Start
+// --------------------
+const PORT = process.env.PORT || 5000
 mongoose
   .connect(process.env.MONGODB_URI)
   .then(() => {
-    console.log('MongoDB bağlantısı başarılı.')
+    console.log('MongoDB connection successful.')
     app.listen(PORT, () => {
-      console.log(`Sunucu ${PORT} portunda çalışıyor.`)
+      console.log(`Server listening on port ${PORT}.`)
     })
   })
   .catch(err => {
-    console.error('MongoDB bağlantı hatası:', err)
+    console.error('MongoDB connection error:', err)
     process.exit(1)
   })

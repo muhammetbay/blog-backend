@@ -3,6 +3,7 @@ const User = require('../models/User')
 const FailedLoginAttempt = require('../models/FailedLoginAttempt')
 const { signToken } = require('../utils/jwt')
 const { sendWelcomeEmail } = require('../utils/emailService')
+const Sentry = require('@sentry/node')
 
 exports.login = async (req, res, next) => {
   try {
@@ -85,6 +86,7 @@ exports.register = async (req, res, next) => {
     delete userObj.password
     res.status(201).json({ token, user: userObj })
   } catch (err) {
+    Sentry.captureException(err)
     next(err)
   }
 }

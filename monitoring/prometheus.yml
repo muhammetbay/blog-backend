@@ -1,0 +1,27 @@
+# Global ayarlar
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alertmanager bağlantısı
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+# Kural dosyaları
+rule_files:
+  - 'rules.yml'
+
+# Scrape hedefleri
+scrape_configs:
+  # Prometheus kendini scrape eder
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node.js uygulamanız
+  - job_name: 'bay-backend'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['host.docker.internal:5000']
