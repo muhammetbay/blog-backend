@@ -1,39 +1,49 @@
+// models/Like.js
+
+// Import dependency
 const mongoose = require('mongoose')
 
+// Define the schema for likes (tracks both users and anonymous visitors)
 const LikeSchema = new mongoose.Schema({
-  // Üye ise user, değilse visitorId
   user: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: 'User', // If logged-in, reference to the user
   },
   visitorId: {
-    type: String,
+    type: String, // If anonymous, unique visitor cookie ID
   },
   post: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Post',
+    ref: 'Post', // Which post was liked
     required: true,
   },
   ip: {
-    type: String,
+    type: String, // IP address of the liker
   },
   country: {
-    type: String,
+    type: String, // Country derived from IP (geoip)
   },
   createdAt: {
     type: Date,
-    default: Date.now,
+    default: Date.now, // When the like occurred
   },
 })
 
-// Herkes için ayrı ayrı eşsiz: user+post veya visitorId+post
+// Ensure unique like per post per user or per visitor
 LikeSchema.index(
   { user: 1, post: 1 },
-  { unique: true, partialFilterExpression: { user: { $exists: true } } }
+  {
+    unique: true,
+    partialFilterExpression: { user: { $exists: true } },
+  }
 )
 LikeSchema.index(
   { visitorId: 1, post: 1 },
-  { unique: true, partialFilterExpression: { visitorId: { $exists: true } } }
+  {
+    unique: true,
+    partialFilterExpression: { visitorId: { $exists: true } },
+  }
 )
 
+// Export the model (collection will be 'likes')
 module.exports = mongoose.model('Like', LikeSchema)

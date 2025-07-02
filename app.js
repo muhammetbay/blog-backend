@@ -3,25 +3,29 @@
 // --------------------
 // 1. Environment Setup
 // --------------------
+// Determine the current environment (development, test, production)
+// and load the corresponding .env file.
 const env = process.env.NODE_ENV || 'development'
 require('dotenv').config({ path: `.env.${env}` })
 
 // --------------------
 // 2. Dependencies
 // --------------------
-const express = require('express')
-const cookieParser = require('cookie-parser')
-const { v4: uuidv4 } = require('uuid')
-const cors = require('cors')
-const mongoose = require('mongoose')
-const Sentry = require('@sentry/node')
-const swaggerJsdoc = require('swagger-jsdoc')
-const swaggerUi = require('swagger-ui-express')
-const logger = require('./utils/logger')
-// initialize background jobs / queues
-// require('./utils/agenda');
-require('./utils/emailQueeRedis')
+const express = require('express') // Web framework
+const cookieParser = require('cookie-parser') // Parse cookies for visitorId
+const { v4: uuidv4 } = require('uuid') // Generate unique IDs
+const cors = require('cors') // Enable CORS
+const mongoose = require('mongoose') // MongoDB ODM
+const Sentry = require('@sentry/node') // Error monitoring
+const swaggerJsdoc = require('swagger-jsdoc') // Swagger spec generator
+const swaggerUi = require('swagger-ui-express') // Swagger UI middleware
+const logger = require('./utils/logger') // Winston logger
 
+// Initialize background jobs / queues
+// require('./utils/agenda');
+require('./utils/emailQueueRedis')
+
+// Metrics utilities for Prometheus
 const {
   client,
   httpRequestsTotal,
@@ -44,6 +48,7 @@ const seoRoutes = require('./routes/seoRoutes')
 // --------------------
 // 4. Sentry Initialization
 // --------------------
+// Configure Sentry for error tracking and performance monitoring
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: env,
@@ -55,15 +60,17 @@ Sentry.init({
 // --------------------
 const app = express()
 
-// 1) Cookie parser
+// 5.0 Cookie Parser
+// Parse cookies on incoming requests to read/write visitorId cookie
 app.use(cookieParser())
 
-// 2) Ziyaretçi kimliği atayan middleware
+// 5.0 Visitor ID Middleware
+// Assign a unique visitorId cookie to anonymous visitors
 app.use((req, res, next) => {
   let visitorId = req.cookies.visitorId
   if (!visitorId) {
+    // Generate and set a new UUID cookie valid for 1 year
     visitorId = uuidv4()
-    // 1 yıl geçerli, sadece HTTP üzerinden
     res.cookie('visitorId', visitorId, {
       maxAge: 365 * 24 * 60 * 60 * 1000,
       httpOnly: true,
@@ -73,70 +80,71 @@ app.use((req, res, next) => {
   next()
 })
 
-// 5.1. Request Logging (Winston)
-//    logs every incoming request
+// 5.1 Request Logging (Winston)
+// Log every incoming HTTP request for audit and debugging
 app.use((req, res, next) => {
   logger.info(`${req.method} ${req.url}`)
   next()
 })
 
-// 5.2. Core Middleware
-app.use(cors())
-app.use(express.json())
+// 5.2 Core Middleware
+app.use(cors()) // Enable Cross-Origin Resource Sharing
+app.use(express.json()) // Parse JSON request bodies
 
-// Metrics middleware: her isteği sayar ve süresini ölçer
+// 5.2 Metrics Middleware
+// Count and time each HTTP request for Prometheus scraping
 app.use((req, res, next) => {
-  // Timer’ı başlat
+  // Start timer for this request
   const end = httpRequestDuration.startTimer()
-
   res.on('finish', () => {
-    // Express route path’i yoksa raw path kullan
+    // Determine route path (fallback to raw URL)
     const route = req.route ? req.route.path : req.path
 
-    // Sayaç artışı
+    // Increment total request counter
     httpRequestsTotal.inc({
       method: req.method,
       route,
       status: res.statusCode,
     })
 
-    // Süre gözlemi
+    // Record duration in histogram
     end({
       method: req.method,
       route,
       status: res.statusCode,
     })
   })
-
   next()
 })
 
-// 5.3. Swagger UI (API Documentation)
+// 5.3 Swagger UI (API Documentation)
+// Generate and serve OpenAPI docs at /api-docs
 const specs = swaggerJsdoc(require('./swagger.js').swaggerOptions)
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs))
 
 // --------------------
 // 6. Public Endpoints
 // --------------------
-// Health check
+// Health check endpoint
 app.get('/', (req, res) => {
   res.send('Merhaba Bay! Backend is up and running.')
 })
 
-// Prometheus’un scrape edeceği metrikler
+// Prometheus metrics endpoint
 app.get('/metrics', async (req, res) => {
   try {
     res.set('Content-Type', client.register.contentType)
     res.end(await client.register.metrics())
   } catch (err) {
-    logger.error('Metrics endpoint hatası', err)
-    res.status(500).send('Metrics toplama hatası')
+    logger.error('Metrics endpoint error', err)
+    res.status(500).send('Metrics collection error')
   }
 })
 
 // --------------------
 // 7. API Routes
 // --------------------
+// Mount all feature-specific routers under /api
 app.use('/api/auth', authRoutes)
 app.use('/api/users', userRoutes)
 app.use('/api/categories', categoryRoutes)
@@ -150,6 +158,8 @@ app.use('/api/seo', seoRoutes)
 // --------------------
 // 8. Test Routes
 // --------------------
+// Quick endpoints for manual testing of logging and error handling
+
 // Winston log test
 app.get('/test/log', (req, res) => {
   logger.info('ℹ️ INFO level test log')
@@ -163,14 +173,17 @@ app.get('/test/sentry', (req, res) => {
   throw new Error('🧪 Sentry test error')
 })
 
+// Another Sentry debug endpoint
 app.get('/debug-sentry', function mainHandler(req, res) {
   throw new Error('My first Sentry error!')
 })
 
+// Error rate test (returns 500)
 app.get('/test/error-rate', (req, res) => {
   res.status(500).send('Forced error')
 })
 
+// Slow endpoint test (2s delay)
 app.get('/test/slow', async (req, res) => {
   await new Promise(r => setTimeout(r, 2000))
   res.send('OK')
@@ -179,13 +192,13 @@ app.get('/test/slow', async (req, res) => {
 // --------------------
 // 9. Sentry Error Handler
 // --------------------
-// For @sentry/node v8: use setupExpressErrorHandler
+// Capture uncaught exceptions and report to Sentry
 Sentry.setupExpressErrorHandler(app)
 
 // --------------------
 // 10. 404 Handler
 // --------------------
-// Catches any request that didn't match above routes
+// Catch-all for routes not matched above
 app.use((req, res) => {
   res.status(404).json({ message: 'Endpoint not found.' })
 })
@@ -193,16 +206,17 @@ app.use((req, res) => {
 // --------------------
 // 11. Global Error Handler
 // --------------------
-// Logs the error via Winston, handles duplicate-key errors, then responds
+// Log the error and handle known cases like Mongo duplicate key
 app.use((err, req, res, next) => {
   logger.error(err)
 
-  // MongoDB duplicate key
+  // Handle MongoDB duplicate key error
   if (err.code === 11000 && err.keyPattern) {
     const field = Object.keys(err.keyPattern)[0]
     return res.status(400).json({ message: `Duplicate ${field} not allowed.` })
   }
 
+  // Generic error response
   res
     .status(err.status || 500)
     .json({ message: err.message || 'Internal Server Error.' })
@@ -211,6 +225,7 @@ app.use((err, req, res, next) => {
 // --------------------
 // 12. Database Connection & Server Start
 // --------------------
+// Connect to MongoDB and then start the server
 const PORT = process.env.PORT || 5000
 mongoose
   .connect(process.env.MONGODB_URI)
