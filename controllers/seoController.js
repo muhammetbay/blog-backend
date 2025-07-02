@@ -1,6 +1,12 @@
 // controllers/seoController.js
+
 const Post = require('../models/Post')
 
+/**
+ * @desc    Return JSON-LD, Open Graph & Twitter meta data for a post
+ * @route   GET /api/seo/posts/:slug
+ * @access  Public
+ */
 exports.getPostSeo = async (req, res, next) => {
   try {
     const slug = req.params.slug
@@ -11,30 +17,23 @@ exports.getPostSeo = async (req, res, next) => {
       .populate('author', 'username')
 
     if (!post) {
-      return res.status(404).json({ message: 'Post bulunamadı.' })
+      return res.status(404).json({ message: 'Post not found.' })
     }
 
-    // Güvenli açıklama elde etme
+    // 1) Safely derive a short description (max 150 chars)
     const rawDesc =
-      post.description != null
-        ? post.description
-        : post.content != null
-          ? post.content
-          : ''
+      post.description != null ? post.description : post.content || ''
     const shortDesc =
       rawDesc.length > 150 ? rawDesc.slice(0, 150) + '...' : rawDesc
 
-    // JSON-LD yapılandırılmış veri
+    // 2) Build JSON-LD schema.org data
     const jsonLd = {
       '@context': 'https://schema.org',
       '@type': 'BlogPosting',
       headline: post.title,
       description: shortDesc,
       image: post.imageUrl || '',
-      author: {
-        '@type': 'Person',
-        name: post.author.username,
-      },
+      author: { '@type': 'Person', name: post.author.username },
       datePublished: post.createdAt.toISOString(),
       dateModified: post.updatedAt.toISOString(),
       interactionStatistic: {
@@ -44,7 +43,7 @@ exports.getPostSeo = async (req, res, next) => {
       },
     }
 
-    // Open Graph meta etiketleri
+    // 3) Open Graph tags
     const og = {
       'og:title': post.title,
       'og:description': shortDesc,
@@ -54,7 +53,7 @@ exports.getPostSeo = async (req, res, next) => {
       'og:site_name': 'Bay Blog',
     }
 
-    // Twitter Card meta etiketleri
+    // 4) Twitter Card tags
     const twitter = {
       'twitter:card': 'summary_large_image',
       'twitter:title': post.title,

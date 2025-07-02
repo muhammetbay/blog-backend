@@ -1,48 +1,57 @@
 // controllers/authController.js
+
 const User = require('../models/User')
 const FailedLoginAttempt = require('../models/FailedLoginAttempt')
 const { signToken } = require('../utils/jwt')
 const { sendWelcomeEmail } = require('../utils/emailService')
 const Sentry = require('@sentry/node')
 
+/**
+ * @desc    Authenticate user and return a JWT
+ * @route   POST /api/auth/login
+ * @access  Public
+ */
 exports.login = async (req, res, next) => {
   try {
     const { email, password } = req.body
-    // 1) Kullanıcı var mı?
+
+    // 1) Find user by email
     const user = await User.findOne({ email })
     if (!user) {
-      return res.status(401).json({ message: 'Geçersiz e-posta veya şifre.' })
+      return res.status(401).json({ message: 'Invalid email or password.' })
     }
-    // 2) Sadece local kullanıcıların şifresini kontrol ediyoruz
+
+    // 2) Allow only local-provider users for password login
     if (user.provider !== 'local') {
       return res
         .status(400)
-        .json({ message: `Lütfen ${user.provider} ile giriş yapın.` })
+        .json({ message: `Please login with ${user.provider}.` })
     }
-    // 3) Şifre karşılaştırması
+
+    // 3) Compare provided password with stored hash
     const isMatch = await user.comparePassword(password)
     if (!isMatch) {
-      // 1) Başarısız denemeyi kaydet
+      // a) Record failed login attempt for analysis
       await FailedLoginAttempt.create({
         user: user._id,
         ip: req.ip,
         userAgent: req.headers['user-agent'],
       })
-      // 2) Sayaçı artır ve kaydet
+      // b) Increment failedLoginCount
       user.failedLoginCount = (user.failedLoginCount || 0) + 1
-      await user.save() // password validator pas geçilecek (isModified kontrolü ile)
-
-      return res.status(401).json({ message: 'Geçersiz e-posta veya şifre.' })
+      await user.save()
+      return res.status(401).json({ message: 'Invalid email or password.' })
     }
-    // 4) loginCount ve lastLoginAt güncelle
+
+    // 4) Increment login metrics and reset failed counters
     user.loginCount += 1
     user.lastLoginAt = Date.now()
     await user.save()
 
-    // 5) Token oluştur
+    // 5) Issue JWT
     const token = signToken(user._id)
 
-    // 6) Yanıt: token + kullanıcı bilgisi (şifresiz)
+    // 6) Return user object (excluding password)
     const userObj = user.toObject()
     delete userObj.password
     res.json({ token, user: userObj })
@@ -51,21 +60,26 @@ exports.login = async (req, res, next) => {
   }
 }
 
+/**
+ * @desc    Register a new user and send a welcome email
+ * @route   POST /api/auth/register
+ * @access  Public
+ */
 exports.register = async (req, res, next) => {
   try {
     const { username, email, password } = req.body
 
-    // 1) Duplicate kontrolü
+    // 1) Prevent duplicate username or email
     const exists = await User.findOne({
       $or: [{ username }, { email }],
     })
     if (exists) {
       return res
         .status(400)
-        .json({ message: 'Kullanıcı adı veya e-posta zaten kayıtlı.' })
+        .json({ message: 'Username or email already exists.' })
     }
 
-    // 2) Yeni user yarat
+    // 2) Create the user record
     const user = new User({
       username,
       email,
@@ -75,13 +89,15 @@ exports.register = async (req, res, next) => {
     })
     await user.save()
 
-    // Hoş geldin maili gönder (hata olsa da registration’ı bozma)
+    // 3) Fire-and-forget welcome email
     sendWelcomeEmail(email, username).catch(err =>
-      console.error('Hoş geldin maili gönderilemedi:', err)
+      console.error('Welcome email failed:', err)
     )
 
-    // 3) Token üret ve dön
+    // 4) Issue JWT
     const token = signToken(user._id)
+
+    // 5) Return user object (excluding password)
     const userObj = user.toObject()
     delete userObj.password
     res.status(201).json({ token, user: userObj })
@@ -91,16 +107,22 @@ exports.register = async (req, res, next) => {
   }
 }
 
+/**
+ * @desc    Get recent failed login attempts for the authenticated user
+ * @route   GET /api/auth/failed-attempts
+ * @access  Private
+ */
 exports.getFailedAttempts = async (req, res, next) => {
   try {
     const userId = req.user._id
-    // Son 50 denemeyi listele, en yeni önce
+
+    // 1) Fetch last 10 failed attempts
     const attempts = await FailedLoginAttempt.find({ user: userId })
       .sort({ timestamp: -1 })
       .limit(10)
       .select('ip userAgent timestamp -_id')
 
-    // Kullanıcıyı da fetch edip sayıyı dönebiliriz
+    // 2) Fetch total failedLoginCount from user
     const user = await User.findById(userId).select('failedLoginCount')
 
     res.json({

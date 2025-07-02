@@ -1,17 +1,23 @@
 // controllers/categoryController.js
+
 const Category = require('../models/Category')
 
-// Yeni kategori oluştur (admin)
+/**
+ * @desc    Create a new category
+ * @route   POST /api/categories
+ * @access  Admin
+ */
 exports.createCategory = async (req, res, next) => {
   try {
     const { name, description } = req.body
 
-    // Duplicate name kontrolü
+    // 1) Prevent duplicate category names
     const exists = await Category.findOne({ name })
     if (exists) {
-      return res.status(400).json({ message: 'Bu kategori zaten mevcut.' })
+      return res.status(400).json({ message: 'This category already exists.' })
     }
 
+    // 2) Create and return the new category
     const category = await Category.create({ name, description })
     res.status(201).json(category)
   } catch (err) {
@@ -19,31 +25,32 @@ exports.createCategory = async (req, res, next) => {
   }
 }
 
-// Tüm kategorileri listele (public)
+/**
+ * @desc    List all categories with post counts
+ * @route   GET /api/categories
+ * @access  Public
+ */
 exports.getCategories = async (req, res, next) => {
   try {
+    // Aggregate to join with posts, count them, and sort by name
     const categories = await Category.aggregate([
-      // 1) Post koleksiyonundan kendi ID’mle eşleşenleri al
       {
         $lookup: {
-          from: 'posts', // MongoDB’de collection adı
-          localField: '_id', // Category._id
-          foreignField: 'category', // Post.category
+          from: 'posts',
+          localField: '_id',
+          foreignField: 'category',
           as: 'posts',
         },
       },
-      // 2) posts array’inin boyutunu postCount alanına ekle
       {
-        $addFields: {
-          postCount: { $size: '$posts' },
-        },
+        $addFields: { postCount: { $size: '$posts' } },
       },
-      // 3) posts array’ini istemiyorsak projekte etmeyelim
       {
         $project: { posts: 0 },
       },
-      // 4) İsim sırasına göre sırala
-      { $sort: { name: 1 } },
+      {
+        $sort: { name: 1 },
+      },
     ])
     res.json(categories)
   } catch (err) {
@@ -51,12 +58,16 @@ exports.getCategories = async (req, res, next) => {
   }
 }
 
-// Tek bir kategori getir (public)
+/**
+ * @desc    Get single category by ID
+ * @route   GET /api/categories/:id
+ * @access  Public
+ */
 exports.getCategoryById = async (req, res, next) => {
   try {
     const category = await Category.findById(req.params.id)
     if (!category) {
-      return res.status(404).json({ message: 'Kategori bulunamadı.' })
+      return res.status(404).json({ message: 'Category not found.' })
     }
     res.json(category)
   } catch (err) {
@@ -64,27 +75,36 @@ exports.getCategoryById = async (req, res, next) => {
   }
 }
 
-// Kategori güncelle (admin)
+/**
+ * @desc    Update a category
+ * @route   PUT /api/categories/:id
+ * @access  Admin
+ */
 exports.updateCategory = async (req, res, next) => {
   try {
     const { name, description } = req.body
     const category = await Category.findById(req.params.id)
     if (!category) {
-      return res.status(404).json({ message: 'Kategori bulunamadı.' })
+      return res.status(404).json({ message: 'Category not found.' })
     }
 
+    // 1) If changing name, ensure no duplicate
     if (name && name !== category.name) {
-      // Duplicate name kontrolü
       const exists = await Category.findOne({ name })
       if (exists) {
-        return res.status(400).json({ message: 'Bu kategori zaten mevcut.' })
+        return res
+          .status(400)
+          .json({ message: 'This category already exists.' })
       }
       category.name = name
     }
+
+    // 2) Update description if provided
     if (description !== undefined) {
       category.description = description
     }
 
+    // 3) Save and return
     const updated = await category.save()
     res.json(updated)
   } catch (err) {
@@ -92,14 +112,18 @@ exports.updateCategory = async (req, res, next) => {
   }
 }
 
-// Kategori sil (admin)
+/**
+ * @desc    Delete a category
+ * @route   DELETE /api/categories/:id
+ * @access  Admin
+ */
 exports.deleteCategory = async (req, res, next) => {
   try {
     const deleted = await Category.findByIdAndDelete(req.params.id)
     if (!deleted) {
-      return res.status(404).json({ message: 'Kategori bulunamadı.' })
+      return res.status(404).json({ message: 'Category not found.' })
     }
-    res.json({ message: 'Kategori silindi.' })
+    res.json({ message: 'Category deleted.' })
   } catch (err) {
     next(err)
   }
