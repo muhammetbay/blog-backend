@@ -10,6 +10,8 @@ require('dotenv').config({ path: `.env.${env}` })
 // 2. Dependencies
 // --------------------
 const express = require('express')
+const cookieParser = require('cookie-parser')
+const { v4: uuidv4 } = require('uuid')
 const cors = require('cors')
 const mongoose = require('mongoose')
 const Sentry = require('@sentry/node')
@@ -36,6 +38,8 @@ const postRoutes = require('./routes/postRoutes')
 const commentRoutes = require('./routes/commentRoutes')
 const adminCommentRoutes = require('./routes/adminCommentRoutes')
 const mediaRoutes = require('./routes/mediaRoutes')
+const likeRoutes = require('./routes/likeRoutes')
+const seoRoutes = require('./routes/seoRoutes')
 
 // --------------------
 // 4. Sentry Initialization
@@ -50,6 +54,24 @@ Sentry.init({
 // 5. Express App Setup
 // --------------------
 const app = express()
+
+// 1) Cookie parser
+app.use(cookieParser())
+
+// 2) Ziyaretçi kimliği atayan middleware
+app.use((req, res, next) => {
+  let visitorId = req.cookies.visitorId
+  if (!visitorId) {
+    visitorId = uuidv4()
+    // 1 yıl geçerli, sadece HTTP üzerinden
+    res.cookie('visitorId', visitorId, {
+      maxAge: 365 * 24 * 60 * 60 * 1000,
+      httpOnly: true,
+    })
+  }
+  req.visitorId = visitorId
+  next()
+})
 
 // 5.1. Request Logging (Winston)
 //    logs every incoming request
@@ -122,6 +144,8 @@ app.use('/api/posts', postRoutes)
 app.use('/api/posts/:postId/comments', commentRoutes)
 app.use('/api/comments', adminCommentRoutes)
 app.use('/api/media', mediaRoutes)
+app.use('/api', likeRoutes)
+app.use('/api/seo', seoRoutes)
 
 // --------------------
 // 8. Test Routes
