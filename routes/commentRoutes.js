@@ -21,4 +21,7 @@ router.post('/', protect, commentLimiter, commentController.createComment)
 router.put('/:id', protect, commentController.updateComment)
 router.delete('/:id', protect, commentController.deleteComment)
 
+// Threaded yorumları getir
+router.get('/with-routes', commentController.getCommentsTree)
+
 module.exports = router

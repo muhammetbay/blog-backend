@@ -18,6 +18,11 @@ const CommentSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    parent: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Comment',
+      default: null, // null ise kök yorum
+    },
     isApproved: {
       type: Boolean,
       default: true, // İleride moderasyon eklersen burayı kullanırsın

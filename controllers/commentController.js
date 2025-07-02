@@ -28,13 +28,47 @@ export async function getCommentsByPost(req, res, next) {
   }
 }
 
+export async function getCommentsTree(req, res, next) {
+  try {
+    const postId = req.params.postId
+    // Tüm yorumları çek, tarih sırasına göre
+    const comments = await Comment.find({ post: postId })
+      .sort({ createdAt: 1 })
+      .lean() // plain JS objesi, kolay modifiye etmek için
+
+    // Map ve ağaç oluşturma
+    const map = {}
+    comments.forEach(c => {
+      c.children = []
+      map[c._id.toString()] = c
+    })
+
+    const tree = []
+    comments.forEach(c => {
+      if (c.parent) {
+        const parent = map[c.parent.toString()]
+        if (parent) parent.children.push(c)
+      } else {
+        tree.push(c)
+      }
+    })
+
+    res.json(tree)
+  } catch (err) {
+    next(err)
+  }
+}
+
 // 2.2. Yeni yorum oluştur (authenticated)
+// controllers/commentController.js
+
 export async function createComment(req, res, next) {
   try {
-    const { content } = req.body
-    // İngilizce kontrol
+    const { content, parent } = req.body
+    const postId = req.params.postId
+
+    // 1) Profanity check
     const hasEnProfanity = wash.check('en', content)
-    // Türkçe kontrol
     const hasTrProfanity = trFilter.check(content)
     if (hasEnProfanity || hasTrProfanity) {
       return res
@@ -42,14 +76,22 @@ export async function createComment(req, res, next) {
         .json({ message: 'Yorumunuz uygunsuz içerik barındırıyor.' })
     }
 
-    // İstersen temizlenmiş versiyonunu da kaydet:
-    // const cleanContent = filter.clean(content);
+    // 2) Eğer parent id’si gönderildiyse, varlığını ve post ilişkisini doğrula
+    if (parent) {
+      const parentComment = await Comment.findById(parent)
+      if (!parentComment || parentComment.post.toString() !== postId) {
+        return res.status(400).json({ message: 'Geçersiz parent yorumu.' })
+      }
+    }
 
+    // 3) Yorum kaydı (kök veya alt yorum olarak)
     const comment = await Comment.create({
       author: req.user._id,
-      post: req.params.postId,
+      post: postId,
       content,
+      parent: parent || null,
     })
+
     res.status(201).json(comment)
   } catch (err) {
     next(err)
